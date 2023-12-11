@@ -46,24 +46,6 @@ python train_synapse.py
 python test_synapse.py
 ```
 
-## Results
-
-Our method achieves the following performance:
-# Synapse
-| Model name       | Organs DICE | Organs HD95
-| ---------------- | :---------: | :--------: |
-| Ours             |   84.30%    |   17.00mm  |
-
-# FLARE2023
-| Model name       | Organs DICE |
-| ---------------- | :---------: |
-| Ours             |   81.87%    |
-
-# ACDC
-| Model name       | Organs DICE |
-| ---------------- | :---------: |
-| Ours             |   92.26%    |
-
 
 
 
