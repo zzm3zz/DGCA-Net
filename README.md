@@ -1,5 +1,5 @@
 # DGCA-Net: A Dual-axis Generalized Cross Attention and Shape-Aware Network for Medical Image Segmentation
-*Zengmin Zhang Yanjun Peng* \
+\*Zengmin Zhang Yanjun Peng* \
 
 ## Environments and Requirements
 
@@ -27,7 +27,7 @@ We only use the slice which contains interest regions.
 - resampling:
 [1, 1, 1] 
 
--intensity cropping:
+- intensity cropping:
 [-175, 275]
 
 
