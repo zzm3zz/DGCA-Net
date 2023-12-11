@@ -317,7 +317,7 @@ class IntraTransBlock(nn.Module):
         q = x[0]
         k = x[1]
         v = x[2]
-        x_pre = 0.3 * q + 0.3 * k + 0.4 * v  # (B, N, H)
+        x_pre = v  # (B, N, H)
         b, c, h, w = v.shape
         q = q.view(b, c, h * w).permute(0, 2, 1).contiguous()
         k = k.view(b, c, h * w).permute(0, 2, 1).contiguous()
