@@ -1,5 +1,5 @@
 # DGCA-Net: A Dual-axis Generalized Cross Attention and Shape-Aware Network for Medical Image Segmentation
-\*Zengmin Zhang Yanjun Peng* \
+\*Zengmin Zhang Yanjun Peng*\
 
 ## Environments and Requirements
 
