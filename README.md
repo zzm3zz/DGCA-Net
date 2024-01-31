@@ -10,9 +10,9 @@ Zengmin Zhang Yanjun Peng
   
 ## Dataset
 
-- Synapse[link](https://github.com/Beckschen/TransUNet).
-- FLARE2023[link](https://codalab.lisn.upsaclay.fr/competitions/12239#learn_the_details-dataset).(You need to join this challenge.)
-- ACDC[link](https://github.com/Beckschen/TransUNet).
+- Synapse [link](https://github.com/Beckschen/TransUNet).
+- FLARE2023 [link](https://codalab.lisn.upsaclay.fr/competitions/12239#learn_the_details-dataset).(You need to join this challenge.)
+- ACDC [link](https://github.com/Beckschen/TransUNet).
 
 ## Preprocessing for FLARE2023
 
