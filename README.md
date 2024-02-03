@@ -18,7 +18,7 @@ Zengmin Zhang Yanjun Peng
 
 A brief description of the preprocessing method
 
-- select samples
+- select samples:
 We analyzed data and selected 222 cases containing 13 organ annotations.
 
 - cropping:
@@ -31,23 +31,20 @@ We only use the slice which contains interest regions.
 [-175, 275]
 
 
-### Preprocessing for boundary ground truth
-```python
-python makeboundry.py
-```
-
 ## Training
 ```
-python train_synapse.py
+python train.py
 ```
 
 ## Testing
 ```python
-python test_synapse.py
+python test.py
 ```
 
+## References
 
-
+-[TransUNet]([url](https://github.com/Beckschen/TransUNet)https://github.com/Beckschen/TransUNet)
+-[SwinUNet]([url](https://github.com/HuCaoFighting/Swin-Unet)https://github.com/HuCaoFighting/Swin-Unet) 
 
 
 
