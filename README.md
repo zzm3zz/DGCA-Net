@@ -43,8 +43,8 @@ python test.py
 
 ## References
 
--[TransUNet] ([url](https://github.com/Beckschen/TransUNet)https://github.com/Beckschen/TransUNet)
--[SwinUNet] ([url](https://github.com/HuCaoFighting/Swin-Unet)https://github.com/HuCaoFighting/Swin-Unet) 
+-[TransUNet](https://github.com/Beckschen/TransUNet)
+-[SwinUNet](https://github.com/HuCaoFighting/Swin-Unet)
 
 
 
