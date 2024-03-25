@@ -92,15 +92,15 @@ class UEncoder(nn.Module):
 
     def __init__(self):
         super(UEncoder, self).__init__()
-        self.res1 = DoubleConv(3, 64)
+        self.res1 = DoubleConv(3, 32)
         self.pool1 = nn.MaxPool2d(2)
-        self.res2 = DoubleConv(64, 128)
+        self.res2 = DoubleConv(32, 64)
         self.pool2 = nn.MaxPool2d(2)
-        self.res3 = DoubleConv(128, 256)
+        self.res3 = DoubleConv(64, 128)
         self.pool3 = nn.MaxPool2d(2)
-        self.res4 = DoubleConv(256, 512)
+        self.res4 = DoubleConv(128, 256)
         self.pool4 = nn.MaxPool2d(2)
-        self.res5 = DoubleConv(512, 1024)
+        self.res5 = DoubleConv(256, 512)
         self.pool5 = nn.MaxPool2d(2)
 
     def forward(self, x):
@@ -204,7 +204,7 @@ class Dual_axis(nn.Module):
         kw = kw.view(b, w, self.heads, self.d_w).permute(0, 2, 1,
                                                          3).contiguous()  # [b, heads, w, d_w] -> [3, 2, 56, 23]
 
-        if self.stage == 0:
+        if self.stage == 0 or self.stage == 2:
             qh = qh.permute(0, 1, 3, 2)
             kh = kh.permute(0, 1, 3, 2)
             qh = F.normalize(qh, dim=3)
@@ -232,7 +232,7 @@ class Dual_axis(nn.Module):
             shape = result.shape
             result = result.reshape(shape[0], shape[1], shape[2] * shape[3])
 
-        elif self.stage == 1:
+        elif self.stage == 1 or self.stage == 3:
             # v.shape = b, heads, h*w, c
             h_v = v
 
@@ -264,7 +264,6 @@ class Dual_axis(nn.Module):
             result = result.view(b, h * w, self.heads * self.d_v).contiguous()
 
         result = self.fc_o(result).view(b, self.channels, h, w)  # [b, channels, h, w]
-
         return result
 
 
@@ -340,11 +339,16 @@ class IntraTransBlock(nn.Module):
         x = x.view(b, h, w, c).permute(0, 3, 1, 2).contiguous()
         x = x_pre + x
 
-        if self.stage != 1 and self.img_size != 7:
+        if self.stage % 2 == 0:
             xx = (x, x, x)
             return xx
-        else:
+        elif self.stage == 1 and self.img_size != 14:
             return x
+        elif self.stage == 3:
+            return x
+        else:
+            xx = (x, x, x)
+            return xx
 
 
 class ParallEncoder(nn.Module):
@@ -354,8 +358,8 @@ class ParallEncoder(nn.Module):
         self.Encoder2 = TransEncoder()
         self.fusion_module = nn.ModuleList()
         self.num_module = 4
-        self.channel_list = [128, 256, 512, 1024]
-        self.fusion_list = [256, 512, 1024, 1024]
+        self.channel_list = [64, 128, 256, 512]
+        self.fusion_list = [128, 256, 512, 512]
 
     def forward(self, x, boundary):
         skips = []
@@ -371,10 +375,10 @@ class ParallEncoder(nn.Module):
 class TransEncoder(nn.Module):
     def __init__(self):
         super(TransEncoder, self).__init__()
-        self.block_layer = [2, 2, 2, 1]
+        self.block_layer = [2, 2, 4, 2]
         self.size = [56, 28, 14, 7]
-        self.channels = [256, 512, 1024, 1024]
-        self.R = 2
+        self.channels = [128, 256, 512, 512]
+        self.R = 4
         stage1 = []
         for _ in range(self.block_layer[0]):
             stage1.append(
@@ -533,9 +537,9 @@ def run_sobel(conv_x, conv_y, input):
 class BED(nn.Module):
     def __init__(self, n_classes):
         super(BED, self).__init__()
-        self.reduce1 = ConvBNReLU(1024, 128, kernel_size=1, padding=0)
-        self.reduce3 = ConvBNReLU(256, 64, kernel_size=1, padding=0)
-        self.reduce5 = ConvBNReLU(64, 32, kernel_size=1, padding=0)
+        self.reduce1 = ConvBNReLU(512, 128, kernel_size=1, padding=0)
+        self.reduce3 = ConvBNReLU(128, 64, kernel_size=1, padding=0)
+        self.reduce5 = ConvBNReLU(32, 32, kernel_size=1, padding=0)
         self.conv = ConvBNReLU(c_in=128 + 64 + 32, c_out=64, kernel_size=3)
         self.out1 = nn.Conv2d(64, 1, 1)
         self.out2 = nn.Conv2d(64, n_classes, 1)
@@ -578,10 +582,10 @@ class SBG(nn.Module):
         skip_add = self.conv_skip((1 - edge_att) * deep + skip)
         deep_add = self.conv_deep(deep + edge_att * skip)
 
-        return skip + deep_add
+        return skip_add + deep_add
         # return torch.cat((skip_add, deep_add), dim=1)
 
-    
+
 class DecoderBlock(nn.Module):
     def __init__(
             self,
@@ -628,11 +632,11 @@ class DGCANet(nn.Module):
         super(DGCANet, self).__init__()
         self.p_encoder = ParallEncoder()
         self.out_size = (224, 224)
-        self.encoder_channels = [1024, 512, 256, 128, 64]
+        self.encoder_channels = [512, 256, 128, 64, 32]
 
-        self.sobel_x5, self.sobel_y5 = get_sobel(64, 1)
-        self.sobel_x3, self.sobel_y3 = get_sobel(256, 1)
-        self.sobel_x1, self.sobel_y1 = get_sobel(1024, 1)
+        self.sobel_x5, self.sobel_y5 = get_sobel(32, 1)
+        self.sobel_x3, self.sobel_y3 = get_sobel(128, 1)
+        self.sobel_x1, self.sobel_y1 = get_sobel(512, 1)
 
         self.bed = BED(n_classes)
         self.pool1 = nn.MaxPool2d(2)
@@ -640,28 +644,28 @@ class DGCANet(nn.Module):
         self.pool3 = nn.MaxPool2d(8)
         self.pool4 = nn.MaxPool2d(16)
 
-        self.sbg1 = SBG(in_channels=1024)
-        self.sbg2 = SBG(in_channels=512)
-        self.sbg3 = SBG(in_channels=256)
-        self.sbg4 = SBG(in_channels=128)
-        self.sbg5 = SBG(in_channels=64)
+        self.sbg1 = SBG(in_channels=512)
+        self.sbg2 = SBG(in_channels=256)
+        self.sbg3 = SBG(in_channels=128)
+        self.sbg4 = SBG(in_channels=64)
+        self.sbg5 = SBG(in_channels=32)
 
         self.decoder1 = DecoderBlock(self.encoder_channels[0] + self.encoder_channels[0], self.encoder_channels[1])
         self.decoder2 = DecoderBlock(self.encoder_channels[1] + self.encoder_channels[1], self.encoder_channels[2])
         self.decoder3 = DecoderBlock(self.encoder_channels[2] + self.encoder_channels[2], self.encoder_channels[3])
         self.decoder4 = DecoderBlock(self.encoder_channels[3] + self.encoder_channels[3], self.encoder_channels[4])
         self.segmentation_head = SegmentationHead(
-            in_channels=64,
+            in_channels=32,
             out_channels=n_classes,
             kernel_size=3,
         )
         self.segmentation_head1 = SegmentationHead(
-            in_channels=64,
+            in_channels=32,
             out_channels=n_classes,
             kernel_size=3,
         )
 
-        self.decoder_final = DecoderBlock(in_channels=64 * 2, out_channels=64)
+        self.decoder_final = DecoderBlock(in_channels=32 * 2, out_channels=32)
 
     def forward(self, x):
         if x.size()[1] == 1:
@@ -699,8 +703,8 @@ class DGCANet(nn.Module):
         return logits, edge_decoder, edge_output
 
 
-# model = DGCANet(n_classes=9)
-# inout = torch.ones((1, 1, 224, 224))
-# print(model)
-# flops, params = profile(model, (inout,))
-# print('flops: %.2f M, params: %.2f M' % (flops / 1e6, params / 1e6))
+model = DGCANet(n_classes=9)
+inout = torch.ones((1, 1, 224, 224))
+print(model)
+flops, params = profile(model, (inout,))
+print('flops: %.2f M, params: %.2f M' % (flops / 1e6, params / 1e6))
