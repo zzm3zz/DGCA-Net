@@ -204,7 +204,7 @@ class Dual_axis(nn.Module):
         kw = kw.view(b, w, self.heads, self.d_w).permute(0, 2, 1,
                                                          3).contiguous()  # [b, heads, w, d_w] -> [3, 2, 56, 23]
 
-        if self.stage == 0 or self.stage == 2:
+        if self.stage % 2 == 0:
             qh = qh.permute(0, 1, 3, 2)
             kh = kh.permute(0, 1, 3, 2)
             qh = F.normalize(qh, dim=3)
@@ -232,7 +232,7 @@ class Dual_axis(nn.Module):
             shape = result.shape
             result = result.reshape(shape[0], shape[1], shape[2] * shape[3])
 
-        elif self.stage == 1 or self.stage == 3:
+        else:
             # v.shape = b, heads, h*w, c
             h_v = v
 
@@ -338,17 +338,9 @@ class IntraTransBlock(nn.Module):
         x = self.irffn(x)
         x = x.view(b, h, w, c).permute(0, 3, 1, 2).contiguous()
         x = x_pre + x
-
-        if self.stage % 2 == 0:
-            xx = (x, x, x)
-            return xx
-        elif self.stage == 1 and self.img_size != 14:
-            return x
-        elif self.stage == 3:
-            return x
-        else:
-            xx = (x, x, x)
-            return xx
+        # print(self.stage)
+        xx = (x, x, x)
+        return xx
 
 
 class ParallEncoder(nn.Module):
@@ -364,21 +356,22 @@ class ParallEncoder(nn.Module):
     def forward(self, x, boundary):
         skips = []
         features = self.Encoder1(x)
-        feature_trans = self.Encoder2(features)
+        feature_trans = self.Encoder2(x, features)
 
         skips.extend(features[:2])
         for i in range(self.num_module):
             skips.append(feature_trans[i])
+        # skips = features
         return skips, features[1]
 
 
 class TransEncoder(nn.Module):
     def __init__(self):
         super(TransEncoder, self).__init__()
-        self.block_layer = [2, 2, 4, 2]
+        self.block_layer = [2, 2, 2, 2]
         self.size = [56, 28, 14, 7]
         self.channels = [128, 256, 512, 512]
-        self.R = 4
+        self.R = 2
         stage1 = []
         for _ in range(self.block_layer[0]):
             stage1.append(
@@ -451,37 +444,45 @@ class TransEncoder(nn.Module):
             )
         self.squeelayers = nn.ModuleList()
 
-        for i in range(len(self.block_layer) - 2):
+        for i in range(len(self.block_layer) - 1):
             self.squeelayers.append(
-                nn.Conv2d(self.channels[i] * 4, self.channels[i] * 2, 1, 1)
+                nn.Conv2d(self.channels[i] * 2, self.channels[i] * 1, 1, 1)
             )
-
         self.squeeze_final = nn.Conv2d(self.channels[-1] * 2, self.channels[-1], 1, 1)
 
-    def forward(self, x):
-        _, _, feature0, feature1, feature2, feature3 = x
+        self.stem = nn.Conv2d(3, self.channels[0], kernel_size=4, stride=4)
+        self.ln = nn.LayerNorm(self.channels[0], eps=1e-6)
+
+    def forward(self, x, x_cnn):
+        _, _, feature0, feature1, feature2, feature3 = x_cnn
         q0 = feature0
-        k0 = feature0
-        v0 = feature0
+        # k0 = feature0
+        # v0 = feature0
+        k0 = self.stem(x)
+        k0 = k0.permute(0, 2, 3, 1)
+        k0 = self.ln(k0)
+        k0 = k0.permute(0, 3, 1, 2)
+        v0 = torch.cat((q0, k0), dim=1)
+        v0 = self.squeelayers[0](v0)
         x0 = (q0, k0, v0)
-        feature0_trans = v0 + self.stage1(x0)  # (56, 56, 256)
+        feature0_trans = v0 + self.stage1(x0)[0]  # (56, 56, 256)
         feature0_trans_down = self.downlayers[0](feature0_trans)  # (28, 28, 512)
 
         q1 = feature1
         k1 = feature0_trans_down
         v1 = torch.cat((q1, feature0_trans_down), dim=1)
-        v1 = self.squeelayers[0](v1)
+        v1 = self.squeelayers[1](v1)
         x1 = (q1, k1, v1)
-        feature1_trans = v1 + self.stage2(x1)
+        feature1_trans = v1 + self.stage2(x1)[0]
 
         feature1_trans_down = self.downlayers[1](feature1_trans)
 
         q2 = feature2
         k2 = feature1_trans_down
         v2 = torch.cat((q2, feature1_trans_down), dim=1)
-        v2 = self.squeelayers[1](v2)
+        v2 = self.squeelayers[2](v2)
         x2 = (q2, k2, v2)
-        feature2_trans = v2 + self.stage3(x2)
+        feature2_trans = v2 + self.stage3(x2)[0]
 
         feature2_trans_down = self.down_end(feature2_trans)
 
@@ -490,7 +491,7 @@ class TransEncoder(nn.Module):
         v3 = torch.cat((q3, feature2_trans_down), dim=1)
         v3 = self.squeeze_final(v3)
         x3 = (q3, k3, v3)
-        feature3_trans = v3 + self.stage4(x3)
+        feature3_trans = v3 + self.stage4(x3)[0]
 
         return [feature0_trans, feature1_trans, feature2_trans, feature3_trans]
 
@@ -534,30 +535,278 @@ def run_sobel(conv_x, conv_y, input):
     return torch.sigmoid(g) * input
 
 
+class Conv2dRe(nn.Module):
+    def __init__(self, in_planes, out_planes, kernel_size=3, stride=1, padding=1, dilation=1,
+                 groups=1, bias=True):
+        super(Conv2dRe, self).__init__()
+        self.bcr = nn.Sequential(
+            nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=padding,
+                      dilation=dilation, groups=groups, bias=bias),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        return self.bcr(x)
+
+
 class IBD(nn.Module):
     def __init__(self, n_classes):
         super(IBD, self).__init__()
-        self.reduce1 = ConvBNReLU(512, 128, kernel_size=1, padding=0)
-        self.reduce3 = ConvBNReLU(128, 64, kernel_size=1, padding=0)
-        self.reduce5 = ConvBNReLU(32, 32, kernel_size=1, padding=0)
-        self.conv = ConvBNReLU(c_in=128 + 64 + 32, c_out=64, kernel_size=3)
-        self.out1 = nn.Conv2d(64, 1, 1)
-        self.out2 = nn.Conv2d(64, n_classes, 1)
+        #         self.reduce1 = ConvBNReLU(512, 128, kernel_size=1, padding=0)
+        #         self.reduce2 = ConvBNReLU(256, 64, kernel_size=1, padding=0)
+        #         self.reduce3 = ConvBNReLU(128, 32, kernel_size=1, padding=0)
+        #         self.reduce4 = ConvBNReLU(64, 16, kernel_size=1, padding=0)
+        #         self.reduce5 = ConvBNReLU(32, 8, kernel_size=1, padding=0)
+        self.conv1 = nn.Sequential(
+            Conv2dRe(256 + 256, 256),
+            Conv2dRe(256, 256)
+        )
+        self.conv2 = nn.Sequential(
+            Conv2dRe(128 + 128, 128),
+            Conv2dRe(128, 128)
+        )
+        self.conv3 = nn.Sequential(
+            Conv2dRe(64 + 64, 64),
+            Conv2dRe(64, 64)
+        )
+        self.conv4 = nn.Sequential(
+            Conv2dRe(32 + 32, 32),
+            Conv2dRe(32, 32)
+        )
 
-    def forward(self, x1, x3, x5):
-        size = x5.size()[2:]
-        x1 = self.reduce1(x1)
-        x3 = self.reduce3(x3)
-        x5 = self.reduce5(x5)
-        x1 = F.interpolate(x1, size, mode='bilinear', align_corners=False)
-        x3 = F.interpolate(x3, size, mode='bilinear', align_corners=False)
-        out = torch.cat((x1, x3), dim=1)
-        out = torch.cat((out, x5), dim=1)
-        out = self.conv(out)
-        out1 = self.out1(out)
-        out2 = self.out2(out)
+        self.cr1 = nn.Sequential(
+            nn.Conv2d(512, 256, kernel_size=1, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        )
+        self.cr2 = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=1, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        )
+        self.cr3 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=1, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        )
+        self.cr4 = nn.Sequential(
+            nn.Conv2d(64, 32, kernel_size=1, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1)
+        )
 
-        return out1, out2
+        self.out1 = nn.Conv2d(32, 1, 3, 1, 1)
+        self.out2 = nn.Conv2d(32, n_classes, 3, 1, 1)
+
+        self.conv_out_1 = nn.Conv2d(1, 1, kernel_size=3, padding=1)
+        self.conv_out_2 = nn.Conv2d(2, 1, kernel_size=3, padding=1)
+        self.conv_out_3 = nn.Conv2d(2, 1, kernel_size=3, padding=1)
+        self.conv_out_4 = nn.Conv2d(2, 1, kernel_size=3, padding=1)
+        self.conv_out_5 = nn.Conv2d(3, 1, kernel_size=3, padding=1)
+
+        self.pool1 = nn.AvgPool2d(2)
+        self.pool2 = nn.AvgPool2d(2)
+        self.pool3 = nn.AvgPool2d(2)
+        self.pool4 = nn.AvgPool2d(2)
+
+        self.up1 = nn.UpsamplingBilinear2d(scale_factor=2)
+        self.up2 = nn.UpsamplingBilinear2d(scale_factor=2)
+        self.up3 = nn.UpsamplingBilinear2d(scale_factor=2)
+        self.up4 = nn.UpsamplingBilinear2d(scale_factor=2)
+
+    def forward(self, x1, x2, x3, x4, x5):
+        x1x = self.up1(x1)
+        x1x = self.cr1(x1x)
+        out = torch.cat((x1x, x2), dim=1)
+        out1 = self.conv1(out)
+
+        out2 = self.up2(out1)
+        out2 = self.cr2(out2)
+        out2 = torch.cat((out2, x3), dim=1)
+        out2 = self.conv2(out2)
+
+        out3 = self.up3(out2)
+        out3 = self.cr3(out3)
+        out3 = torch.cat((out3, x4), dim=1)
+        out3 = self.conv3(out3)
+
+        out4 = self.up4(out3)
+        out4 = self.cr4(out4)
+        out4 = torch.cat((out4, x5), dim=1)
+        out4 = self.conv4(out4)
+
+        out_o1 = self.out1(out4)
+        out_o2 = self.out2(out4)
+
+        avg_out1 = torch.mean(x1, dim=1, keepdim=True)
+        s1 = self.conv_out_1(avg_out1)
+
+        avg_out2 = torch.mean(x2, dim=1, keepdim=True)
+        avg_out21 = torch.mean(out1, dim=1, keepdim=True)
+        s2 = torch.cat([avg_out2, avg_out21], dim=1)
+        s2 = self.conv_out_2(s2)
+
+        avg_out3 = torch.mean(x3, dim=1, keepdim=True)
+        avg_out31 = torch.mean(out2, dim=1, keepdim=True)
+        s3 = torch.cat([avg_out3, avg_out31], dim=1)
+        s3 = self.conv_out_3(s3)
+
+        avg_out4 = torch.mean(x4, dim=1, keepdim=True)
+        avg_out41 = torch.mean(out3, dim=1, keepdim=True)
+        s4 = torch.cat([avg_out4, avg_out41], dim=1)
+        s4 = self.conv_out_4(s4)
+
+        avg_out5 = torch.mean(x5, dim=1, keepdim=True)
+        avg_out51 = torch.mean(out4, dim=1, keepdim=True)
+        s5 = torch.cat([avg_out5, avg_out51], dim=1)
+        s5 = torch.cat([s5, out_o1], dim=1)
+        s5 = self.conv_out_5(s5)
+
+        s = [s1, s2, s3, s4, s5]
+        return out_o1, out_o2, s
+
+
+# class IBD(nn.Module):
+#     def __init__(self, n_classes):
+#         super(IBD, self).__init__()
+#         self.reduce1 = ConvBNReLU(512, 128, kernel_size=1, padding=0)
+#         self.reduce2 = ConvBNReLU(256, 64, kernel_size=1, padding=0)
+#         self.reduce3 = ConvBNReLU(128, 32, kernel_size=1, padding=0)
+#         self.reduce4 = ConvBNReLU(64, 16, kernel_size=1, padding=0)
+#         self.reduce5 = ConvBNReLU(32, 8, kernel_size=1, padding=0)
+#         self.conv = ConvBNReLU(c_in=128 + 64 + 32 + 16 + 8, c_out=32, kernel_size=3)
+#         self.out1 = nn.Conv2d(32, 1, 1)
+#         self.out2 = nn.Conv2d(32, n_classes, 1)
+#         self.conv_out_1 = nn.Conv2d(2, 1, 1)
+#         self.conv_out_2 = nn.Conv2d(2, 1, 1)
+#         self.conv_out_3 = nn.Conv2d(2, 1, 1)
+#         self.conv_out_4 = nn.Conv2d(2, 1, 1)
+#         self.conv_out_5 = nn.Conv2d(2, 1, 1)
+
+#         self.pool1 = nn.MaxPool2d(2)
+#         self.pool2 = nn.MaxPool2d(4)
+#         self.pool3 = nn.MaxPool2d(8)
+#         self.pool4 = nn.MaxPool2d(16)
+
+#         self.up1 = nn.UpsamplingBilinear2d(scale_factor=16)
+#         self.up2 = nn.UpsamplingBilinear2d(scale_factor=8)
+#         self.up3 = nn.UpsamplingBilinear2d(scale_factor=4)
+#         self.up4 = nn.UpsamplingBilinear2d(scale_factor=2)
+
+#     def forward(self, x1, x2, x3, x4, x5):
+#         size = x5.size()[2:]
+#         x1 = self.reduce1(x1)
+#         x2 = self.reduce2(x2)
+#         x3 = self.reduce3(x3)
+#         x4 = self.reduce4(x4)
+#         x5 = self.reduce5(x5)
+# #         x1x = F.interpolate(x1, size, mode='bilinear', align_corners=False)
+# #         x2x = F.interpolate(x2, size, mode='bilinear', align_corners=False)
+# #         x3x = F.interpolate(x3, size, mode='bilinear', align_corners=False)
+# #         x4x = F.interpolate(x4, size, mode='bilinear', align_corners=False)
+#         x1x = self.up1(x1)
+#         x2x = self.up2(x2)
+#         x3x = self.up3(x3)
+#         x4x = self.up4(x4)
+#         out = torch.cat((x1x, x2x), dim=1)
+#         out = torch.cat((out, x3x), dim=1)
+#         out = torch.cat((out, x4x), dim=1)
+#         out = torch.cat((out, x5), dim=1)
+#         out = self.conv(out)
+#         out1 = self.out1(out)
+#         out2 = self.out2(out)
+
+#         avg_out1 = torch.mean(x1, dim=1, keepdim=True)
+#         s1 = torch.cat([avg_out1, self.pool4(out1)], dim=1)
+#         s1 = self.conv_out_1(s1)
+
+#         avg_out2 = torch.mean(x2, dim=1, keepdim=True)
+#         s2 = torch.cat([avg_out2, self.pool3(out1)], dim=1)
+#         s2 = self.conv_out_2(s2)
+
+#         avg_out3 = torch.mean(x3, dim=1, keepdim=True)
+#         s3 = torch.cat([avg_out3, self.pool2(out1)], dim=1)
+#         s3 = self.conv_out_3(s3)
+
+#         avg_out4 = torch.mean(x4, dim=1, keepdim=True)
+#         s4 = torch.cat([avg_out4, self.pool1(out1)], dim=1)
+#         s4 = self.conv_out_4(s4)
+
+#         avg_out5 = torch.mean(x5, dim=1, keepdim=True)
+#         s5 = torch.cat([avg_out5, out1], dim=1)
+#         s5 = self.conv_out_5(s5)
+
+#         s = [s1, s2, s3, s4, s5]
+#         return out1, out2, s
+
+
+# class BAG(nn.Module):
+#     def __init__(self, in_channels):
+#         super(BAG, self).__init__()
+#         self.channels = in_channels
+#         self.conv_skip = nn.Sequential(
+#             nn.Conv2d(in_channels, in_channels,
+#                       kernel_size=1, bias=False),
+#             nn.BatchNorm2d(in_channels),
+#             nn.ReLU()
+#         )
+#         self.conv_deep = nn.Sequential(
+#             nn.Conv2d(in_channels, in_channels,
+#                       kernel_size=1, bias=False),
+#             nn.BatchNorm2d(in_channels),
+#             nn.ReLU()
+#         )
+#         self.up1 = nn.UpsamplingBilinear2d(scale_factor=2)
+#         self.cbr1 = nn.Sequential(
+#             nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm2d(in_channels),
+#             nn.ReLU()
+#         )
+#         self.cbr2 = nn.Sequential(
+#             nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm2d(in_channels),
+#             nn.ReLU()
+#         )
+#         self.conv_out = nn.Sequential(
+#             nn.Conv2d(in_channels * 2, in_channels, kernel_size=1, padding=0, bias=False),
+#             nn.BatchNorm2d(in_channels),
+#             nn.ReLU()
+#         )
+
+#     def forward(self, skip, deep, edge_att):
+#         skip = self.cbr1(skip)
+#         deep = self.cbr2(self.up1(deep))
+
+#         skip_add = self.conv_skip((1 - edge_att) * deep + skip)
+#         deep_add = self.conv_deep(deep + edge_att * skip)
+#         out = self.conv_out(torch.cat((skip_add, deep_add), dim=1))
+#         return out
+# return torch.cat((skip_add, deep_add), dim=1)
+
+# class IBD(nn.Module):
+#     def __init__(self, n_classes):
+#         super(IBD, self).__init__()
+#         self.reduce1 = ConvBNReLU(512, 128, kernel_size=1, padding=0)
+#         self.reduce3 = ConvBNReLU(128, 64, kernel_size=1, padding=0)
+#         self.reduce5 = ConvBNReLU(32, 32, kernel_size=1, padding=0)
+#         self.conv = ConvBNReLU(c_in=128 + 64 + 32, c_out=64, kernel_size=3)
+#         self.out1 = nn.Conv2d(64, 1, 1)
+#         self.out2 = nn.Conv2d(64, n_classes, 1)
+
+#     def forward(self, x1, x3, x5):
+#         size = x5.size()[2:]
+#         x1 = self.reduce1(x1)
+#         x3 = self.reduce3(x3)
+#         x5 = self.reduce5(x5)
+#         x1 = F.interpolate(x1, size, mode='bilinear', align_corners=False)
+#         x3 = F.interpolate(x3, size, mode='bilinear', align_corners=False)
+#         out = torch.cat((x1, x3), dim=1)
+#         out = torch.cat((out, x5), dim=1)
+#         out = self.conv(out)
+#         out1 = self.out1(out)
+#         out2 = self.out2(out)
+
+#         return out1, out2
 
 
 class BAG(nn.Module):
@@ -635,14 +884,12 @@ class DGCANet(nn.Module):
         self.encoder_channels = [512, 256, 128, 64, 32]
 
         self.sobel_x5, self.sobel_y5 = get_sobel(32, 1)
+        self.sobel_x4, self.sobel_y4 = get_sobel(64, 1)
         self.sobel_x3, self.sobel_y3 = get_sobel(128, 1)
+        self.sobel_x2, self.sobel_y2 = get_sobel(256, 1)
         self.sobel_x1, self.sobel_y1 = get_sobel(512, 1)
 
-        self.bed = IBD(n_classes)
-        self.pool1 = nn.MaxPool2d(2)
-        self.pool2 = nn.MaxPool2d(4)
-        self.pool3 = nn.MaxPool2d(8)
-        self.pool4 = nn.MaxPool2d(16)
+        self.ibd = IBD(n_classes)
 
         self.bag1 = BAG(in_channels=512)
         self.bag2 = BAG(in_channels=256)
@@ -664,7 +911,10 @@ class DGCANet(nn.Module):
             out_channels=n_classes,
             kernel_size=3,
         )
-
+        self.pool1 = nn.MaxPool2d(2)
+        self.pool2 = nn.MaxPool2d(4)
+        self.pool3 = nn.MaxPool2d(8)
+        self.pool4 = nn.MaxPool2d(16)
         self.decoder_final = DecoderBlock(in_channels=32 * 2, out_channels=32)
 
     def forward(self, x):
@@ -672,39 +922,65 @@ class DGCANet(nn.Module):
             x = x.repeat(1, 3, 1, 1)
         encoder_skips, feature1 = self.p_encoder(x, x)
 
-        e1 = run_sobel(self.sobel_x1, self.sobel_y1, encoder_skips[-2])  # 1024  14
-        e3 = run_sobel(self.sobel_x3, self.sobel_y3, encoder_skips[-4])  # 256  56
-        e5 = run_sobel(self.sobel_x5, self.sobel_y5, encoder_skips[-6])  # 64  224
-        edge, edge_output = self.ibd(e1, e3, e5)
+        e1 = run_sobel(self.sobel_x1, self.sobel_y1, encoder_skips[-2])  # 512  14
+        e2 = run_sobel(self.sobel_x2, self.sobel_y2, encoder_skips[-3])  # 256  28
+        e3 = run_sobel(self.sobel_x3, self.sobel_y3, encoder_skips[-4])  # 128  56
+        e4 = run_sobel(self.sobel_x4, self.sobel_y4, encoder_skips[-5])  # 64  112
+        e5 = run_sobel(self.sobel_x5, self.sobel_y5, encoder_skips[-6])  # 32  224
+        edge, edge_output, s = self.ibd(e1, e2, e3, e4, e5)
+        # edge, edge_output = self.ibd(e1, e3, e5)
 
-        edge_att = torch.sigmoid(edge)  # 1 * 56 * 56
-        edge_att1 = self.pool4(edge_att)
+        edge_att1 = torch.sigmoid(s[0])
         bag1 = self.bag1(encoder_skips[-2], encoder_skips[-1], edge_att1)
         x1_up = self.decoder1(encoder_skips[-1], bag1)
 
-        edge_att2 = self.pool3(edge_att)
+        edge_att2 = torch.sigmoid(s[1])
         bag2 = self.bag2(encoder_skips[-3], x1_up, edge_att2)
         x2_up = self.decoder2(x1_up, bag2)
 
-        edge_att3 = self.pool2(edge_att)
+        edge_att3 = torch.sigmoid(s[2])
         bag3 = self.bag3(encoder_skips[-4], x2_up, edge_att3)
         x3_up = self.decoder3(x2_up, bag3)
 
-        edge_att4 = self.pool1(edge_att)
+        edge_att4 = torch.sigmoid(s[3])
         bag4 = self.bag4(encoder_skips[-5], x3_up, edge_att4)
         x4_up = self.decoder4(x3_up, bag4)
-        edge_att5 = edge_att
-        bag5 = self.sbg5(encoder_skips[-6], x4_up, edge_att5)
+
+        edge_att5 = torch.sigmoid(s[4])
+        bag5 = self.bag5(encoder_skips[-6], x4_up, edge_att5)
         x_final = self.decoder_final(x4_up, bag5)
 
         logits = self.segmentation_head(x_final)
         edge_decoder = self.segmentation_head1(x_final)
+
+        #         edge_att = torch.sigmoid(edge)  # 1 * 56 * 56
+        #         edge_att1 = self.pool4(edge_att)
+        #         sbg1 = self.bag1(encoder_skips[-2], encoder_skips[-1], edge_att1)
+        #         x1_up = self.decoder1(encoder_skips[-1], sbg1)
+
+        #         edge_att2 = self.pool3(edge_att)
+        #         sbg2 = self.bag2(encoder_skips[-3], x1_up, edge_att2)
+        #         x2_up = self.decoder2(x1_up, sbg2)
+
+        #         edge_att3 = self.pool2(edge_att)
+        #         sbg3 = self.bag3(encoder_skips[-4], x2_up, edge_att3)
+        #         x3_up = self.decoder3(x2_up, sbg3)
+
+        #         edge_att4 = self.pool1(edge_att)
+        #         sbg4 = self.bag4(encoder_skips[-5], x3_up, edge_att4)
+        #         x4_up = self.decoder4(x3_up, sbg4)
+        #         edge_att5 = edge_att
+        #         sbg5 = self.bag5(encoder_skips[-6], x4_up, edge_att5)
+        #         x_final = self.decoder_final(x4_up, sbg5)
+
+        #         logits = self.segmentation_head(x_final)
+        #         edge_decoder = self.segmentation_head1(x_final)
 
         return logits, edge_decoder, edge_output
 
 
 model = DGCANet(n_classes=9)
 inout = torch.ones((1, 1, 224, 224))
-print(model)
+# print(model)
 flops, params = profile(model, (inout,))
 print('flops: %.2f M, params: %.2f M' % (flops / 1e6, params / 1e6))
