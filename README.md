@@ -1,5 +1,5 @@
-# DGCA-Net: A Dual-axis Generalized Cross Attention and Shape-Aware Network for Medical Image Segmentation
-Zengmin Zhang Yanjun Peng
+# DGCA-Net: A Dual-axis Generalized Cross Attention and Shape-Aware Network for 2D Medical Image Segmentation
+Zengmin Zhang, Yanjun Peng, Xiaomeng Duan, Qingfan Hou, Zhengyu Li
 
 ## Environments and Requirements
 
@@ -11,7 +11,7 @@ Zengmin Zhang Yanjun Peng
 ## Dataset
 
 - Synapse [link](https://github.com/Beckschen/TransUNet).
-- FLARE2023 [link](https://codalab.lisn.upsaclay.fr/competitions/12239#learn_the_details-dataset).(You need to join this challenge.)
+- FLARE2023 [link](https://codalab.lisn.upsaclay.fr/competitions/12239#learn_the_details-dataset).
 - ACDC [link](https://github.com/Dootmaan/MT-UNet).
 
 ## Preprocessing for FLARE2023
