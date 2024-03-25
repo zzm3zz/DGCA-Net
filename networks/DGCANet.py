@@ -534,9 +534,9 @@ def run_sobel(conv_x, conv_y, input):
     return torch.sigmoid(g) * input
 
 
-class BED(nn.Module):
+class IBD(nn.Module):
     def __init__(self, n_classes):
-        super(BED, self).__init__()
+        super(IBD, self).__init__()
         self.reduce1 = ConvBNReLU(512, 128, kernel_size=1, padding=0)
         self.reduce3 = ConvBNReLU(128, 64, kernel_size=1, padding=0)
         self.reduce5 = ConvBNReLU(32, 32, kernel_size=1, padding=0)
@@ -560,9 +560,9 @@ class BED(nn.Module):
         return out1, out2
 
 
-class SBG(nn.Module):
+class BAG(nn.Module):
     def __init__(self, in_channels):
-        super(SBG, self).__init__()
+        super(BAG, self).__init__()
         self.channels = in_channels
         self.conv_skip = nn.Sequential(
             nn.Conv2d(in_channels, in_channels,
@@ -638,17 +638,17 @@ class DGCANet(nn.Module):
         self.sobel_x3, self.sobel_y3 = get_sobel(128, 1)
         self.sobel_x1, self.sobel_y1 = get_sobel(512, 1)
 
-        self.bed = BED(n_classes)
+        self.bed = IBD(n_classes)
         self.pool1 = nn.MaxPool2d(2)
         self.pool2 = nn.MaxPool2d(4)
         self.pool3 = nn.MaxPool2d(8)
         self.pool4 = nn.MaxPool2d(16)
 
-        self.sbg1 = SBG(in_channels=512)
-        self.sbg2 = SBG(in_channels=256)
-        self.sbg3 = SBG(in_channels=128)
-        self.sbg4 = SBG(in_channels=64)
-        self.sbg5 = SBG(in_channels=32)
+        self.bag1 = BAG(in_channels=512)
+        self.bag2 = BAG(in_channels=256)
+        self.bag3 = BAG(in_channels=128)
+        self.bag4 = BAG(in_channels=64)
+        self.bag5 = BAG(in_channels=32)
 
         self.decoder1 = DecoderBlock(self.encoder_channels[0] + self.encoder_channels[0], self.encoder_channels[1])
         self.decoder2 = DecoderBlock(self.encoder_channels[1] + self.encoder_channels[1], self.encoder_channels[2])
@@ -675,27 +675,27 @@ class DGCANet(nn.Module):
         e1 = run_sobel(self.sobel_x1, self.sobel_y1, encoder_skips[-2])  # 1024  14
         e3 = run_sobel(self.sobel_x3, self.sobel_y3, encoder_skips[-4])  # 256  56
         e5 = run_sobel(self.sobel_x5, self.sobel_y5, encoder_skips[-6])  # 64  224
-        edge, edge_output = self.bed(e1, e3, e5)
+        edge, edge_output = self.ibd(e1, e3, e5)
 
         edge_att = torch.sigmoid(edge)  # 1 * 56 * 56
         edge_att1 = self.pool4(edge_att)
-        sbg1 = self.sbg1(encoder_skips[-2], encoder_skips[-1], edge_att1)
-        x1_up = self.decoder1(encoder_skips[-1], sbg1)
+        bag1 = self.bag1(encoder_skips[-2], encoder_skips[-1], edge_att1)
+        x1_up = self.decoder1(encoder_skips[-1], bag1)
 
         edge_att2 = self.pool3(edge_att)
-        sbg2 = self.sbg2(encoder_skips[-3], x1_up, edge_att2)
-        x2_up = self.decoder2(x1_up, sbg2)
+        bag2 = self.bag2(encoder_skips[-3], x1_up, edge_att2)
+        x2_up = self.decoder2(x1_up, bag2)
 
         edge_att3 = self.pool2(edge_att)
-        sbg3 = self.sbg3(encoder_skips[-4], x2_up, edge_att3)
-        x3_up = self.decoder3(x2_up, sbg3)
+        bag3 = self.bag3(encoder_skips[-4], x2_up, edge_att3)
+        x3_up = self.decoder3(x2_up, bag3)
 
         edge_att4 = self.pool1(edge_att)
-        sbg4 = self.sbg4(encoder_skips[-5], x3_up, edge_att4)
-        x4_up = self.decoder4(x3_up, sbg4)
+        bag4 = self.bag4(encoder_skips[-5], x3_up, edge_att4)
+        x4_up = self.decoder4(x3_up, bag4)
         edge_att5 = edge_att
-        sbg5 = self.sbg5(encoder_skips[-6], x4_up, edge_att5)
-        x_final = self.decoder_final(x4_up, sbg5)
+        bag5 = self.sbg5(encoder_skips[-6], x4_up, edge_att5)
+        x_final = self.decoder_final(x4_up, bag5)
 
         logits = self.segmentation_head(x_final)
         edge_decoder = self.segmentation_head1(x_final)
